@@ -135,21 +135,20 @@ async def verify_and_extract(request: Request):
     data = await request.json()
     cookies_raw = data.get("cookies", "")
     proxy = data.get("proxy", "").strip() or None
-    ad_account_raw = data.get("ad_account", "").strip()
+    billing_url = data.get("billing_url", "").strip()
 
     try:
         cookies = parse_cookies(cookies_raw)
     except ValueError as e:
         return {"ok": False, "reason": str(e)}
 
-    # بناء رابط الصفحة المستهدفة — دائماً Ads Manager لأنه يحتوي على التوكن
-    if ad_account_raw:
-        act_id = extract_act_id(ad_account_raw)
+    # استخراج الحساب الإعلاني من رابط الفوترة
+    if billing_url:
+        act_id = extract_act_id(billing_url)
         target_url = f'https://www.facebook.com/ads/manager/?act={act_id}'
         resolved_account = f"act_{act_id}"
     else:
-        target_url = 'https://www.facebook.com/ads/manager/'
-        resolved_account = None
+        return {"ok": False, "reason": "الرجاء إدخال رابط الفوترة"}
 
     try:
         async with async_playwright() as p:
@@ -178,17 +177,13 @@ async def verify_and_extract(request: Request):
             name_match = re.search(r'<title>([^<]+)</title>', content)
             name = name_match.group(1).replace('Facebook', '').strip() if name_match else 'مستخدم'
 
-            # إذا لم يُعطَ حساب، استخرجه من الصفحة
-            if not resolved_account:
-                found = list(set(re.findall(r'act_(\d+)', content)))
-                resolved_account = f"act_{found[0]}" if found else ""
-
             await browser.close()
             return {
                 "ok": True,
                 "name": name,
                 "token": token,
-                "ad_account": resolved_account
+                "ad_account": resolved_account,
+                "billing_url": billing_url
             }
     except Exception as e:
         return {"ok": False, "reason": f"خطأ: {str(e)[:100]}"}
@@ -274,12 +269,12 @@ async def add_cards(request: Request):
     if not cards_text:
         return {"ok": False, "reason": "لا توجد بطاقات للربط"}
 
-    if not billing_url and ad_account:
-        act_id = ad_account.replace('act_', '').strip()
-        billing_url = f'https://www.facebook.com/ads/manager/account_settings/account_billing/?act={act_id}'
-
     if not billing_url:
-        return {"ok": False, "reason": "لم يتم تحديد حساب إعلاني"}
+        if ad_account:
+            act_id = ad_account.replace('act_', '').strip()
+            billing_url = f'https://www.facebook.com/ads/manager/account_settings/account_billing/?act={act_id}'
+        else:
+            return {"ok": False, "reason": "لم يتم تحديد رابط الفوترة أو الحساب الإعلاني"}
 
     results = []
     try:
