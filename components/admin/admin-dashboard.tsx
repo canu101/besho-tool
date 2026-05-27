@@ -1,28 +1,42 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { Users, Plus, Trash2, Pause, Play, RefreshCw, Calendar, Globe } from 'lucide-react'
+import { Users, Plus, Trash2, Pause, Play, RefreshCw, Calendar, Key, Copy, Check } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 
 interface Subscription {
   id: string
   user_email: string
   user_name: string | null
-  allowed_ip: string | null
+  license_key: string | null
   starts_at: string
   expires_at: string
   is_active: boolean
   created_at: string
 }
 
+function generateLicenseKey() {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+  const segments = []
+  for (let i = 0; i < 4; i++) {
+    let segment = ''
+    for (let j = 0; j < 4; j++) {
+      segment += chars[Math.floor(Math.random() * chars.length)]
+    }
+    segments.push(segment)
+  }
+  return segments.join('-')
+}
+
 export default function AdminDashboard() {
   const [subscriptions, setSubscriptions] = useState<Subscription[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [showAddForm, setShowAddForm] = useState(false)
+  const [copiedKey, setCopiedKey] = useState<string | null>(null)
   const [newSub, setNewSub] = useState({
     user_email: '',
     user_name: '',
-    allowed_ip: '',
+    license_key: generateLicenseKey(),
     duration_days: '30',
   })
 
@@ -51,7 +65,7 @@ export default function AdminDashboard() {
   }, [])
 
   const handleAddSubscription = async () => {
-    if (!newSub.user_email || !newSub.allowed_ip) return
+    if (!newSub.user_email || !newSub.license_key) return
 
     const expiresAt = new Date()
     expiresAt.setDate(expiresAt.getDate() + parseInt(newSub.duration_days))
@@ -60,14 +74,19 @@ export default function AdminDashboard() {
       const { error } = await supabase.from('subscriptions').insert({
         user_email: newSub.user_email,
         user_name: newSub.user_name || null,
-        allowed_ip: newSub.allowed_ip,
+        license_key: newSub.license_key,
         expires_at: expiresAt.toISOString(),
         is_active: true,
       })
 
       if (!error) {
         setShowAddForm(false)
-        setNewSub({ user_email: '', user_name: '', allowed_ip: '', duration_days: '30' })
+        setNewSub({ 
+          user_email: '', 
+          user_name: '', 
+          license_key: generateLicenseKey(), 
+          duration_days: '30' 
+        })
         fetchSubscriptions()
       }
     } catch (error) {
@@ -96,6 +115,12 @@ export default function AdminDashboard() {
     } catch (error) {
       console.error('Error deleting subscription:', error)
     }
+  }
+
+  const copyToClipboard = async (key: string) => {
+    await navigator.clipboard.writeText(key)
+    setCopiedKey(key)
+    setTimeout(() => setCopiedKey(null), 2000)
   }
 
   const isExpired = (expiresAt: string) => new Date(expiresAt) < new Date()
@@ -152,14 +177,24 @@ export default function AdminDashboard() {
                 />
               </div>
               <div>
-                <label className="block text-xs text-gray-500 mb-1">عنوان IP المسموح *</label>
-                <input
-                  type="text"
-                  value={newSub.allowed_ip}
-                  onChange={(e) => setNewSub({ ...newSub, allowed_ip: e.target.value })}
-                  className="w-full px-4 py-2 bg-[#141414] border border-[#333] rounded-lg text-white font-mono"
-                  placeholder="192.168.1.1"
-                />
+                <label className="block text-xs text-gray-500 mb-1">مفتاح الترخيص *</label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={newSub.license_key}
+                    onChange={(e) => setNewSub({ ...newSub, license_key: e.target.value.toUpperCase() })}
+                    className="flex-1 px-4 py-2 bg-[#141414] border border-[#333] rounded-lg text-white font-mono text-center tracking-wider"
+                    placeholder="XXXX-XXXX-XXXX-XXXX"
+                    dir="ltr"
+                  />
+                  <button
+                    onClick={() => setNewSub({ ...newSub, license_key: generateLicenseKey() })}
+                    className="px-3 py-2 bg-[#333] hover:bg-[#444] rounded-lg transition-colors"
+                    title="توليد مفتاح جديد"
+                  >
+                    <RefreshCw className="w-4 h-4 text-gray-400" />
+                  </button>
+                </div>
               </div>
               <div>
                 <label className="block text-xs text-gray-500 mb-1">مدة الاشتراك (أيام)</label>
@@ -175,7 +210,7 @@ export default function AdminDashboard() {
             <div className="flex gap-3 mt-6">
               <button
                 onClick={handleAddSubscription}
-                disabled={!newSub.user_email || !newSub.allowed_ip}
+                disabled={!newSub.user_email || !newSub.license_key}
                 className="flex-1 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-500 disabled:bg-[#333] disabled:text-gray-500 transition-colors"
               >
                 إضافة
@@ -242,7 +277,7 @@ export default function AdminDashboard() {
             <thead className="bg-[#141414]">
               <tr>
                 <th className="px-4 py-3 text-right text-xs font-medium text-gray-500">المستخدم</th>
-                <th className="px-4 py-3 text-right text-xs font-medium text-gray-500">IP</th>
+                <th className="px-4 py-3 text-right text-xs font-medium text-gray-500">مفتاح الترخيص</th>
                 <th className="px-4 py-3 text-right text-xs font-medium text-gray-500">ينتهي في</th>
                 <th className="px-4 py-3 text-right text-xs font-medium text-gray-500">الحالة</th>
                 <th className="px-4 py-3 text-right text-xs font-medium text-gray-500">إجراءات</th>
@@ -258,7 +293,24 @@ export default function AdminDashboard() {
                     </div>
                   </td>
                   <td className="px-4 py-3">
-                    <span className="text-sm text-gray-400 font-mono">{sub.allowed_ip || '-'}</span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm text-blue-400 font-mono bg-blue-500/10 px-2 py-1 rounded">
+                        {sub.license_key || '-'}
+                      </span>
+                      {sub.license_key && (
+                        <button
+                          onClick={() => copyToClipboard(sub.license_key!)}
+                          className="p-1 hover:bg-[#333] rounded transition-colors"
+                          title="نسخ"
+                        >
+                          {copiedKey === sub.license_key ? (
+                            <Check className="w-4 h-4 text-green-400" />
+                          ) : (
+                            <Copy className="w-4 h-4 text-gray-500" />
+                          )}
+                        </button>
+                      )}
+                    </div>
                   </td>
                   <td className="px-4 py-3">
                     <span className={`text-sm ${isExpired(sub.expires_at) ? 'text-red-400' : 'text-gray-400'}`}>

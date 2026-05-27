@@ -1,64 +1,38 @@
-import { headers } from 'next/headers'
-import { createClient } from '@/lib/supabase/server'
 import ToolContainer from '@/components/tool-container'
-import LockedOverlay from '@/components/locked-overlay'
+import LoginForm from '@/components/login-form'
+import { cookies } from 'next/headers'
+import { createClient } from '@/lib/supabase/server'
 
-interface Subscription {
-  id: string
-  user_email: string
-  user_name: string | null
-  allowed_ip: string | null
-  starts_at: string
-  expires_at: string
-  is_active: boolean
-}
-
-async function getClientIP() {
-  const headersList = await headers()
-  const forwardedFor = headersList.get('x-forwarded-for')
-  const realIp = headersList.get('x-real-ip')
-  
-  if (forwardedFor) {
-    return forwardedFor.split(',')[0].trim()
-  }
-  if (realIp) {
-    return realIp.trim()
-  }
-  return null
-}
-
-async function checkSubscription(clientIp: string | null): Promise<{
+async function checkSession(): Promise<{
   isValid: boolean
-  subscription: Subscription | null
+  userName: string | null
+  expiresAt: string | null
   reason: string
 }> {
+  const cookieStore = await cookies()
+  const licenseKey = cookieStore.get('license_key')?.value
+
+  if (!licenseKey) {
+    return { isValid: false, userName: null, expiresAt: null, reason: 'no_license' }
+  }
+
   // Check if Supabase is configured
   if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
-    // In development without Supabase, allow access
-    return { isValid: true, subscription: null, reason: 'no_db' }
+    return { isValid: true, userName: 'مستخدم', expiresAt: null, reason: 'no_db' }
   }
 
   try {
     const supabase = await createClient()
     
-    // Get subscription by IP
-    const { data: subscriptions, error } = await supabase
+    const { data: subscription, error } = await supabase
       .from('subscriptions')
       .select('*')
+      .eq('license_key', licenseKey)
       .eq('is_active', true)
+      .single()
     
-    if (error || !subscriptions || subscriptions.length === 0) {
-      return { isValid: false, subscription: null, reason: 'no_subscription' }
-    }
-
-    // Find subscription matching current IP
-    const subscription = subscriptions.find((sub: Subscription) => {
-      if (!sub.allowed_ip) return false
-      return sub.allowed_ip === clientIp
-    })
-
-    if (!subscription) {
-      return { isValid: false, subscription: null, reason: 'ip_not_allowed' }
+    if (error || !subscription) {
+      return { isValid: false, userName: null, expiresAt: null, reason: 'invalid_license' }
     }
 
     // Check if subscription is expired
@@ -66,33 +40,38 @@ async function checkSubscription(clientIp: string | null): Promise<{
     const expiresAt = new Date(subscription.expires_at)
     
     if (now > expiresAt) {
-      return { isValid: false, subscription, reason: 'expired' }
+      return { isValid: false, userName: subscription.user_name, expiresAt: subscription.expires_at, reason: 'expired' }
     }
 
-    return { isValid: true, subscription, reason: 'valid' }
+    return { 
+      isValid: true, 
+      userName: subscription.user_name, 
+      expiresAt: subscription.expires_at,
+      reason: 'valid' 
+    }
   } catch (error) {
-    console.error('Subscription check error:', error)
-    // On error, deny access for security
-    return { isValid: false, subscription: null, reason: 'error' }
+    console.error('Session check error:', error)
+    return { isValid: false, userName: null, expiresAt: null, reason: 'error' }
   }
 }
 
 export default async function Home() {
-  const clientIp = await getClientIP()
-  const { isValid, subscription, reason } = await checkSubscription(clientIp)
+  const { isValid, userName, expiresAt, reason } = await checkSession()
+
+  if (!isValid) {
+    return (
+      <main className="min-h-screen flex items-center justify-center p-4">
+        <div className="relative">
+          <ToolContainer disabled />
+          <LoginForm reason={reason} />
+        </div>
+      </main>
+    )
+  }
 
   return (
     <main className="min-h-screen flex items-center justify-center p-4">
-      <div className="relative">
-        <ToolContainer />
-        {!isValid && (
-          <LockedOverlay 
-            reason={reason} 
-            clientIp={clientIp}
-            expiresAt={subscription?.expires_at}
-          />
-        )}
-      </div>
+      <ToolContainer userName={userName} expiresAt={expiresAt} />
     </main>
   )
 }
