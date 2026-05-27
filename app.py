@@ -57,6 +57,23 @@ app.add_middleware(
 )
 
 
+def get_client_ip(request: Request) -> str:
+    """Extract client IP from request headers or connection"""
+    # Check X-Forwarded-For header (for proxies/load balancers)
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        # Take the first IP in the chain
+        return forwarded.split(",")[0].strip()
+    # Check X-Real-IP header
+    real_ip = request.headers.get("x-real-ip")
+    if real_ip:
+        return real_ip.strip()
+    # Fallback to direct connection IP
+    if request.client:
+        return request.client.host
+    return ""
+
+
 def normalize_cookie(c: Dict) -> Dict:
     if "domain" not in c or not c.get("domain"):
         c["domain"] = ".facebook.com"
@@ -694,7 +711,7 @@ async def activate_ad(request: Request):
         # نجيب campaign_id و adset_id تلقائياً من الـ ad
         info = requests.get(f"{base}/{ad_id}", params={"fields": "campaign_id,adset_id", "access_token": token}, timeout=10).json()
         if "error" in info:
-            return {"ok": False, "reason": f"خطأ جلب معلومات الإعلان: {info['error'].get('message','')}"}
+            return {"ok": False, "reason": f"خطأ طلب معلومات الإعلان: {info['error'].get('message','')}"}
         campaign_id = info.get("campaign_id")
         adset_id = info.get("adset_id")
 
@@ -923,14 +940,18 @@ async def boost_ad(request: Request):
         return {"ok": False, "reason": f"خطأ: {str(e)[:150]}"}
 
 
-# ======================= API: Check License Key =======================
+# ======================= API: Check License Key with IP Protection =======================
 @app.post("/api/check_license")
 async def check_license(request: Request):
     data = await request.json()
     license_key = data.get("license_key", "").strip()
+    verify_session = data.get("verify_session", False)
     
     if not license_key:
         return {"ok": False, "reason": "مفتاح الترخيص مطلوب"}
+    
+    # Get client IP
+    client_ip = get_client_ip(request)
     
     # Check Supabase
     if SUPABASE_URL and SUPABASE_KEY:
@@ -942,14 +963,26 @@ async def check_license(request: Request):
             }
             
             # Query subscriptions table
-            url = f"{SUPABASE_URL}/rest/v1/subscriptions?license_key=eq.{license_key}&is_active=eq.true&select=*"
+            url = f"{SUPABASE_URL}/rest/v1/subscriptions?license_key=eq.{license_key}&select=*"
             res = requests.get(url, headers=headers, timeout=10)
             
             if res.status_code == 200:
                 subs = res.json()
                 if subs and len(subs) > 0:
                     sub = subs[0]
+                    sub_id = sub.get("id")
+                    is_active = sub.get("is_active", False)
+                    admin_frozen = sub.get("admin_frozen", False)
                     expires_at = sub.get("expires_at")
+                    allowed_ip = sub.get("allowed_ip")
+                    
+                    # Check if subscription is active
+                    if not is_active:
+                        return {"ok": False, "reason": "الاشتراك غير مفعل"}
+                    
+                    # Check if admin has frozen the subscription
+                    if admin_frozen:
+                        return {"ok": False, "reason": "تم تجميد الاشتراك من قبل المسؤول"}
                     
                     # Check expiration
                     if expires_at:
@@ -957,10 +990,40 @@ async def check_license(request: Request):
                         if exp_date < datetime.now(exp_date.tzinfo):
                             return {"ok": False, "reason": "انتهت صلاحية الاشتراك"}
                     
+                    # IP Protection Logic
+                    if verify_session:
+                        # This is a session verification (user already logged in before)
+                        # Check if IP matches the allowed_ip
+                        if allowed_ip and allowed_ip != client_ip:
+                            return {"ok": False, "reason": "تم فتح الأداة من جهاز آخر. لا يمكن استخدام نفس المفتاح من عدة أجهزة."}
+                    else:
+                        # This is a new login
+                        if allowed_ip and allowed_ip != client_ip:
+                            # IP already set and different - reject
+                            return {"ok": False, "reason": "هذا المفتاح مرتبط بجهاز آخر. تواصل مع المسؤول لإعادة التعيين."}
+                        elif not allowed_ip:
+                            # First login - lock IP
+                            update_url = f"{SUPABASE_URL}/rest/v1/subscriptions?id=eq.{sub_id}"
+                            update_data = {
+                                "allowed_ip": client_ip,
+                                "current_ip": client_ip,
+                                "last_login_at": datetime.now().isoformat()
+                            }
+                            requests.patch(update_url, headers=headers, json=update_data, timeout=10)
+                        else:
+                            # Same IP - update last login
+                            update_url = f"{SUPABASE_URL}/rest/v1/subscriptions?id=eq.{sub_id}"
+                            update_data = {
+                                "current_ip": client_ip,
+                                "last_login_at": datetime.now().isoformat()
+                            }
+                            requests.patch(update_url, headers=headers, json=update_data, timeout=10)
+                    
                     return {
                         "ok": True,
                         "user_name": sub.get("user_name") or sub.get("user_email", "مستخدم"),
-                        "expires_at": expires_at
+                        "expires_at": expires_at,
+                        "allowed_ip": allowed_ip or client_ip
                     }
                 else:
                     return {"ok": False, "reason": "مفتاح غير صالح"}
@@ -974,7 +1037,8 @@ async def check_license(request: Request):
     return {
         "ok": True,
         "user_name": "مستخدم تجريبي",
-        "expires_at": (datetime.now() + timedelta(days=30)).isoformat()
+        "expires_at": (datetime.now() + timedelta(days=30)).isoformat(),
+        "allowed_ip": client_ip
     }
 
 
