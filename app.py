@@ -582,7 +582,7 @@ async def add_cards(request: Request):
                 text_lower = page_content.lower()
 
                 success_keywords = [
-                    "تمت إضافة البطاقة", "card added", "successfully added",
+                    "تمت إضافة ��لبطاقة", "card added", "successfully added",
                     "payment method added", "has been added", "you've added",
                     "تم إضافة", "added a new payment", "new card", "payment method saved"
                 ]
@@ -1040,6 +1040,163 @@ async def check_license(request: Request):
         "expires_at": (datetime.now() + timedelta(days=30)).isoformat(),
         "allowed_ip": client_ip
     }
+
+
+# ======================= Admin Routes =======================
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "besho2024")  # Change this in production!
+
+def generate_license_key():
+    """Generate a unique license key"""
+    import uuid
+    return f"BSH-{uuid.uuid4().hex[:8].upper()}-{uuid.uuid4().hex[:4].upper()}"
+
+
+@app.get("/admin", response_class=HTMLResponse)
+async def admin_page(request: Request):
+    return templates.TemplateResponse("admin.html", {"request": request})
+
+
+@app.post("/api/admin/login")
+async def admin_login(request: Request):
+    data = await request.json()
+    password = data.get("password", "")
+    if password == ADMIN_PASSWORD:
+        return {"ok": True}
+    return {"ok": False, "reason": "كلمة السر غير صحيحة"}
+
+
+@app.get("/api/admin/subscriptions")
+async def get_subscriptions(request: Request):
+    """Get all subscriptions"""
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return {"ok": False, "reason": "Supabase غير مكون"}
+    
+    try:
+        headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "Content-Type": "application/json"
+        }
+        url = f"{SUPABASE_URL}/rest/v1/subscriptions?select=*&order=created_at.desc"
+        resp = requests.get(url, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            return {"ok": True, "subscriptions": resp.json()}
+        return {"ok": False, "reason": "خطأ في جلب البيانات"}
+    except Exception as e:
+        return {"ok": False, "reason": str(e)}
+
+
+@app.post("/api/admin/create_subscription")
+async def create_subscription(request: Request):
+    """Create a new subscription"""
+    data = await request.json()
+    
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return {"ok": False, "reason": "Supabase غير مكون"}
+    
+    try:
+        headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "Content-Type": "application/json",
+            "Prefer": "return=representation"
+        }
+        
+        license_key = generate_license_key()
+        days = int(data.get("days", 30))
+        expires_at = (datetime.now() + timedelta(days=days)).isoformat()
+        
+        new_sub = {
+            "license_key": license_key,
+            "user_name": data.get("user_name", ""),
+            "user_email": data.get("user_email", ""),
+            "is_active": True,
+            "expires_at": expires_at,
+            "admin_frozen": False
+        }
+        
+        url = f"{SUPABASE_URL}/rest/v1/subscriptions"
+        resp = requests.post(url, headers=headers, json=new_sub, timeout=10)
+        
+        if resp.status_code in [200, 201]:
+            created = resp.json()
+            return {"ok": True, "subscription": created[0] if isinstance(created, list) else created}
+        return {"ok": False, "reason": f"خطأ: {resp.text}"}
+    except Exception as e:
+        return {"ok": False, "reason": str(e)}
+
+
+@app.post("/api/admin/update_subscription")
+async def update_subscription(request: Request):
+    """Update a subscription"""
+    data = await request.json()
+    sub_id = data.get("id")
+    
+    if not sub_id:
+        return {"ok": False, "reason": "معرف الاشتراك مطلوب"}
+    
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return {"ok": False, "reason": "Supabase غير مكون"}
+    
+    try:
+        headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        update_data = {}
+        if "is_active" in data:
+            update_data["is_active"] = data["is_active"]
+        if "admin_frozen" in data:
+            update_data["admin_frozen"] = data["admin_frozen"]
+        if "user_name" in data:
+            update_data["user_name"] = data["user_name"]
+        if "user_email" in data:
+            update_data["user_email"] = data["user_email"]
+        if "days" in data:
+            update_data["expires_at"] = (datetime.now() + timedelta(days=int(data["days"]))).isoformat()
+        if "reset_ip" in data and data["reset_ip"]:
+            update_data["allowed_ip"] = None
+            update_data["current_ip"] = None
+        
+        url = f"{SUPABASE_URL}/rest/v1/subscriptions?id=eq.{sub_id}"
+        resp = requests.patch(url, headers=headers, json=update_data, timeout=10)
+        
+        if resp.status_code in [200, 204]:
+            return {"ok": True}
+        return {"ok": False, "reason": f"خطأ: {resp.text}"}
+    except Exception as e:
+        return {"ok": False, "reason": str(e)}
+
+
+@app.post("/api/admin/delete_subscription")
+async def delete_subscription(request: Request):
+    """Delete a subscription"""
+    data = await request.json()
+    sub_id = data.get("id")
+    
+    if not sub_id:
+        return {"ok": False, "reason": "معرف الاشتراك مطلوب"}
+    
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return {"ok": False, "reason": "Supabase غير مكون"}
+    
+    try:
+        headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        url = f"{SUPABASE_URL}/rest/v1/subscriptions?id=eq.{sub_id}"
+        resp = requests.delete(url, headers=headers, timeout=10)
+        
+        if resp.status_code in [200, 204]:
+            return {"ok": True}
+        return {"ok": False, "reason": f"خطأ: {resp.text}"}
+    except Exception as e:
+        return {"ok": False, "reason": str(e)}
 
 
 @app.get("/", response_class=HTMLResponse)
